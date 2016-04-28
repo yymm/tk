@@ -1,32 +1,33 @@
 # -*- encoding:utf-8 -*-
 
-from gitlab_api import *
-from flask import Flask, jsonify
+from task import Task
+from flask import Flask, jsonify, request
 
 '''タスク管理のメインインターフェイス
 '''
 
 app = Flask(__name__)
+task = Task()
 
 @app.route("/task/today", methods=["GET"])
 def task_today():
-    pass
+    return jsonify( {"message": task.today()} )
 
 @app.route("/task/remaining", methods=["GET"])
 def task_remaining():
-    pass
+    return jsonify( {"message": task.remaining_and_clean()} )
 
-@app.route("/task/result", methods=["GET"])
-def task_result():
-    pass
+@app.route("/task/update", methods=["GET"])
+def task_update():
+    return jsonify( task.update( request.args.get("id") ) )
 
 @app.route("/task/add", methods=["GET"])
 def task_add():
-    pass
+    return jsonify( task.add( request.args.get("name") ) )
 
 @app.route("/task/delete", methods=["GET"])
 def task_delete():
-    pass
+    return jsonify( task.delete( request.args.get("id") ) )
 
 if __name__ == "__main__":
     app.debug = True
