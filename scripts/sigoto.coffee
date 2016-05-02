@@ -31,35 +31,101 @@ module.exports = (robot) ->
                process.env.REDIS_URL
              else
                'redis://localhost:6379'
-
   info   = Url.parse redisUrl, true
   con = if info.auth then Redis.createClient(info.port, info.hostname, {no_ready_check: true}) else Redis.createClient(info.port, info.hostname)
 
   #
   # GitLab Issue
   #
+  gitlabApiUrl = if process.env.GITLAB_API_URL?
+               gitlabApiUrlEnv = "GITLAB_API_URL"
+               process.env.GITLAB_API_URL
+             else
+               "http://192.168.5.56/api/v3"
+  gitlabToken = if process.env.GITLAB_TOKEN
+              gitlabTokenEnv = "GITLAB_TOKEN"
+              process.env.GITLAB_TOKEN
+            else
+              "Vrz8de3zCXK9N9oEdy8q"
 
-  #
-  # Task
-  #
-  today_task = ->
-    return
+  robot.respond /gitlab (.*) (.*)/i, (res) ->
+    name = res.match[1]
+    info = {label: res.match[2]}
+    request
+      .get( "#{gitlabApiUrl}/projects" )
+      .query( {private_token: gitlabToken} )
+      .end( (err, resp) ->
+        if err || !resp.ok
+          res.send "GitLab APIダメー\n> #{err}"
+          return
+        data = resp.body.map (d) -> d.name
+        if name not in data
+          res.send "ないよー"
+          return
+        data = resp.body.filter (d) -> d.name == name
+        info.id = data[0].id
+        con.hset "gitlab", name, JSON.stringify( info ), (err, rep) ->
+          if err
+            res.send "Redisがエラーどばぁ\n#{err}"
+            return
+          res.send "GitLabのプロジェクト追加ー\n> project_name: #{name}\n> project_id: #{info.id}\n> label: #{info.label}"
+      )
 
-  add_task = (name) ->
-    id = 0
-    keys = con.hkeys "task"
-    console.log keys
-    #con.hset "task",
-    return {name: name, id: id}
+  robot.respond /gitlab del (.*)/i, (res) ->
+    name = res.match[1]
+    con.hdel "gitlab", name, (err, rep) ->
+      if err
+        res.send "Redisがエラーどばぁ\n#{err}"
+        return
+      res.send "#{name}の設定消したよー"
 
-  delete_task = (id) ->
-    return
+  robot.respond /gitlab status/i, (res) ->
+    con.hgetall "gitlab", (err, rep) ->
+      if err
+        res.send "Redisがエラーどばぁ\n#{err}"
+        return
+      if not rep or rep.length == 0
+        res.send "まだGitLab使ってないよー"
+        return
+      message = "GitLabの登録状況ー\n```\n"
+      for k, v of rep
+        v = JSON.parse v
+        message += "#{k} |  user: #{v.user}, label: #{v.label}\n"
+      message += "```"
+      res.send message
 
-  update_task = (id) ->
-    return
+  robot.respond "gitlab issue", (res) ->
+    get_gitlab_issues res
 
-  clean_task = ->
-    return
+  get_gitlab_issues = (res) ->
+    con.hgetall "gitlab", (err, rep) ->
+      if err
+        res.send "Redisがエラーどばぁ\n#{err}"
+        return
+      if not rep or rep.length == 0
+        return
+      promise_agent = (val) ->
+        return new Promise (resolve) ->
+          query = {private_token: gitlabToken, state: "opened", labels: val.label}
+          request
+            .get( "#{gitlabApiUrl}/projects/#{val.id}/issues" )
+            .query(  )
+            .end( (err, resp) ->
+              if err || !resp.ok
+                return
+              else
+                resolve(resp.body)
+            )
+      l = []
+      for k, v of rep
+        l.push JSON.parse v
+      Promise.all l.map promise_agent
+        .then (results) ->
+          # ここにコールバックを入れる感じ
+          console.log results
+          return
+        .catch (error) ->
+          return
 
   #
   # 定時タスク
@@ -103,19 +169,57 @@ module.exports = (robot) ->
       evening.stop()
     res.reply "やすむーおやすみー"
 
+  #
+  # Task
+  #
   robot.hear /仕事/, (res) ->
-    res.send "今日の仕事だよー"
-    res.send today_task()
+    con.hgetall "task", (err, rep) ->
+      if err
+        res.send "Redisがエラーどばぁ\n#{err}"
+        return
+      if not rep
+        return
+      message = "今日の仕事だよー\n```\n"
+      for key, val of rep
+        val = JSON.parse val
+        status = if val.status then "x" else " "
+        message += "[#{status}] #{key}: #{val.name}\n"
+      message += "```"
+      res.send message
 
   robot.respond /task add (.*)/i, (res) ->
-    task = add_task res.match[1]
-    res.send "追加したよー IDは#{task.id}だよー"
+    name = res.match[1]
+    con.hkeys "task", (err, rep) ->
+      if err
+        res.send "Redisがエラーどばぁ\n#{err}"
+        return
+      id = 0
+      if not rep of rep.length != 0
+        id = rep.length
+      con.hset "task", id, JSON.stringify({name: name, status: false}), (err, rep) ->
+        if err
+          res.send "Redisがエラーどばぁ\n#{err}"
+          return
+        res.send "追加したよー IDは#{id}だよー"
 
-  robot.respond /task delete (\d+)/i, (res) ->
-    task = delete_task res.match[1]
-    res.send "#{task.id}番目はいらない子だったんや..."
+  robot.respond /task del (\d+)/i, (res) ->
+    id = res.match[1]
+    con.hdel "task", id, (err, rep) ->
+      if err
+        res.send "Redisがエラーどばぁ\n#{err}"
+        return
+      res.send "#{id}番目はいらない子..."
 
   robot.respond /done (\d+)/i, (res) ->
-    task = update_task res.match[1]
-    res.send "完了ーおつかれおつかれー (#{task.name} )"
-
+    id = res.match[1]
+    con.hget "task", id, (err, rep) ->
+      if err
+        res.send "Redisがエラーどばぁ\n#{err}"
+        return
+      val = JSON.parse rep
+      val.status = if val.status then false else true
+      con.hset "task", id, JSON.stringify(val), (err, rep) ->
+        if err
+          res.send "Redisがエラーどばぁ\n#{err}"
+          return
+        res.send "> #{id}: #{val.name}\n完了ーおつかれおつかれー"
